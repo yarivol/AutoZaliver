@@ -1,0 +1,12 @@
+{
+  "ig_username": "YOUR_INSTAGRAM_LOGIN",
+  "ig_password": "YOUR_INSTAGRAM_PASSWORD",
+  "ig_proxy": "",
+  "ig_session": "session.json",
+  "tiktok_profile": "my_tiktok_account",
+  "enabled_platforms": ["YouTube", "Instagram", "TikTok"],
+  "youtube_privacy": "public",
+  "youtube_made_for_kids": false,
+  "default_title": "Новое видео #Shorts",
+  "default_description": "Новое видео! #shorts #reels #tiktok"
+}

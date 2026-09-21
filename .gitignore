@@ -1,0 +1,29 @@
+# Локальные настройки и секреты
+config.json
+client_secrets.json
+token.json
+session.json
+*_session.json
+*cookies*.json
+cookies*.json
+*.pem
+*.key
+*.crt
+
+# Локальное состояние и очередь
+pipeline_state.json
+to_upload/
+done/
+
+# Виртуальное окружение и Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Логи, временные и системные файлы
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
