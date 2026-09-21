@@ -327,33 +327,3 @@ curl.exe -4 -I https://www.instagram.com
 Это проверка веб-адреса, а не всех серверов Instagram API. Работа сайта в браузере не гарантирует работу загрузчика.
 
 Журнал показывается в окне и автоматически в файл не сохраняется. Скопируйте нужные строки до закрытия. Для диагностики передавайте текст ошибки без паролей, токенов и кодов 2FA.
-
-## Обновление и GitHub
-
-Перед обновлением закройте приложение. Для установки через Git:
-
-```cmd
-cd /d D:\AutoZaliver
-git pull --ff-only
-.venv\Scripts\python.exe -m pip install --timeout 300 -r requirements.txt
-.venv\Scripts\python.exe -m pip install --timeout 300 --no-deps moviepy==2.2.1
-```
-
-При конфликте Git остановитесь; не применяйте `reset --hard` или `push --force` наугад. Не заменяйте свой config.json шаблоном — добавляйте новые поля вручную.
-
-Перед отправкой изменений добавляйте явный список файлов:
-
-```cmd
-git add README.md requirements.txt config.example.json autozaliver.py start.bat .gitignore
-git diff --cached
-git status --short
-```
-
-Проверьте содержимое (выход из просмотра — `Q`). Затем:
-
-```cmd
-git commit -m "Update application and setup guide"
-git push origin main
-```
-
-**Не публикуйте:** config.json, client_secrets.json, token.json, session.json, cookies, резервные копии исходников, .venv, to_upload, done и файл состояния. `.gitignore` не удаляет уже отслеживаемые секреты и не очищает историю коммитов. В config.example.json должны оставаться только заглушки.
