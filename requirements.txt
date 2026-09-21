@@ -1,0 +1,22 @@
+# Python 3.12; versions from the local AutoZaliver environment.
+# Install from CMD in the project directory:
+# .venv\Scripts\python.exe -m pip install -r requirements.txt
+# .venv\Scripts\python.exe -m pip install --no-deps moviepy==2.2.1
+# .venv\Scripts\phantomwright_driver.exe install chromium
+# TikTok also requires Node.js and npm on PATH.
+#
+# MoviePy is installed separately because its Pillow<12 requirement
+# conflicts with instagrapi's Pillow>=12.2 requirement. instagrapi[video]
+# installs the video dependencies; the separate command bypasses only
+# MoviePy's dependency resolution. This is not a conflict-free lockfile.
+
+customtkinter==6.0.0
+watchdog==6.0.0
+google-api-python-client==2.200.0
+google-auth==2.58.0
+google-auth-oauthlib==1.4.1
+instagrapi[video]==3.0.9
+tiktokautouploader==6.1
+imageio-ffmpeg==0.6.0
+# TikTokAutoUploader imports pkg_resources.
+setuptools==80.10.2
