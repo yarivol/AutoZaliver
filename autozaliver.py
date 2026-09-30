@@ -253,38 +253,63 @@ class Pipeline:
 
     @staticmethod
     def _patch_tiktok_cancel_locator():
-        """Make the affected TikTok Cancel locator strict-mode safe.
+        """Scope both visibility checks and clicks to the foreground dialog."""
+        from functools import wraps
+        selectors = {"button:has-text('Cancel')", 'button:has-text("Cancel")'}
 
-        The package uses Playwright's synchronous API. The patch is idempotent
-        and is intentionally limited to the exact selector from the failing
-        third-party function, so application code and other selectors retain
-        their normal strict-mode behavior.
-        """
-        # tiktokautouploader импортирует Page из phantomwright, а не из
-        # обычного playwright. Поддерживаем оба варианта для разных версий.
-        page_classes = []
+        def install(page_class):
+            if getattr(page_class.locator, "_autozaliver_dialog_patch", False):
+                return
+            original_locator = page_class.locator
+            original_click = page_class.click
+
+            def target(page):
+                # Never select the background upload-cancel button. TikTok
+                # uses both ARIA dialogs and floating portal containers.
+                # NOTE: Locator.last (nth=-1) matches nothing under the
+                # phantomwright driver, so index explicitly via nth(count - 1).
+                dialogs = original_locator(
+                    page, '[role="dialog"]:visible, [aria-modal="true"]:visible'
+                )
+                count = dialogs.count()
+                if count:
+                    return dialogs.nth(count - 1).get_by_role("button", name="Cancel", exact=True)
+                portals = original_locator(
+                    page, '[data-floating-ui-portal]:has([class*="Modal-overlay"]:visible)'
+                )
+                count = portals.count()
+                if count:
+                    return portals.nth(count - 1).get_by_role("button", name="Cancel", exact=True)
+                # An empty locator skips dismissal if there is no active dialog.
+                return original_locator(page, '[role="dialog"]:visible').get_by_role(
+                    "button", name="Cancel", exact=True
+                )
+
+            @wraps(original_locator)
+            def locator(page, selector, *args, **kwargs):
+                if isinstance(selector, str) and selector.strip() in selectors:
+                    return target(page)
+                return original_locator(page, selector, *args, **kwargs)
+
+            @wraps(original_click)
+            def click(page, selector, *args, **kwargs):
+                if isinstance(selector, str) and selector.strip() in selectors:
+                    button = target(page)
+                    button.click(*args, **kwargs)
+                    button.wait_for(state="hidden", timeout=10000)
+                    return
+                return original_click(page, selector, *args, **kwargs)
+
+            locator._autozaliver_dialog_patch = True
+            page_class.locator = locator
+            page_class.click = click
+
         for module_name in ("phantomwright.sync_api", "playwright.sync_api"):
             try:
                 module = __import__(module_name, fromlist=["Page"])
-                page_classes.append(module.Page)
-            except (ImportError, AttributeError):
+            except ImportError:
                 continue
-        for page_class in page_classes:
-            if getattr(page_class.locator, "_autozaliver_cancel_patch", False):
-                continue
-            original_locator = page_class.locator
-
-            def patched_locator(self, selector, *args, _original=original_locator, **kwargs):
-                locator = _original(self, selector, *args, **kwargs)
-                if isinstance(selector, str) and selector.strip() in {
-                    "button:has-text('Cancel')",
-                    'button:has-text("Cancel")',
-                }:
-                    return locator.first
-                return locator
-
-            patched_locator._autozaliver_cancel_patch = True
-            page_class.locator = patched_locator
+            install(module.Page)
 
     def process(self, video):
         active = self.state["active"]

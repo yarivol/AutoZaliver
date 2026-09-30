@@ -2,6 +2,7 @@
 config.json
 client_secrets.json
 token.json
+token.*.json
 session.json
 *_session.json
 *cookies*.json
