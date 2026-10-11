@@ -236,13 +236,14 @@ class Pipeline:
         client.dump_settings(str(session))
 
     def tiktok(self, video, title, description):
-        # Обход несовместимости tiktokautouploader с новым интерфейсом TikTok.
-        # В старой версии библиотеки используется page.locator(
-        # "button:has-text('Cancel')").is_visible(), но теперь TikTok
-        # рисует две кнопки Cancel. Playwright в strict mode выбрасывает
-        # исключение вместо выбора элемента. Подменяем только этот запрос,
-        # оставляя остальные локаторы библиотеки без изменений.
+        # Обходы несовместимостей tiktokautouploader с текущим TikTok Studio:
+        # 1) strict mode Playwright на дублях кнопок Cancel/Got it;
+        # 2) модалки (TUXModal-overlay) и тосты (TUXToast), перехватывающие
+        #    клики по редактору описания (TimeoutError: intercepts pointer
+        #    events) — библиотека закрывает только обучающий поп-ап.
         self._patch_tiktok_cancel_locator()
+        self._patch_tiktok_locator_click()
+        self._patch_tiktok_user_simulator()
         from tiktokautouploader import upload_tiktok
 
         result = upload_tiktok(video=str(video), description=description,
@@ -252,10 +253,89 @@ class Pipeline:
         self.log("TikTok: upload_tiktok завершился без исключения; проверьте публикацию в профиле")
 
     @staticmethod
+    def _neutralize_tiktok_overlays(page, include_modals=False):
+        """Снимает перехват кликов (pointer-events) с тостов и модалок TikTok.
+
+        Тосты (TUXToast) неинтерактивны (aria-hidden), поэтому их отключение
+        безопасно всегда. Модалки (TUXModal-overlay) отключаем только для
+        элементов вне самой модалки — иначе сломался бы клик по кнопкам
+        подтверждения (например, Post now).
+        """
+        try:
+            page.evaluate(
+                """(includeModals) => {
+                    document.querySelectorAll('div[data-floating-ui-portal]').forEach((portal) => {
+                        const toast = portal.querySelector('div[class*="TUXToast"]');
+                        const modal = includeModals
+                            ? portal.querySelector('div[class*="TUXModal-overlay"][data-transition-status="open"]')
+                            : null;
+                        if (toast || modal) {
+                            portal.style.pointerEvents = 'none';
+                        }
+                    });
+                    document.querySelectorAll('div[class*="TUXToast"]').forEach((toast) => {
+                        toast.style.pointerEvents = 'none';
+                    });
+                }""",
+                include_modals,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _dismiss_tiktok_overlays(page):
+        """Закрывает модалки и тосты TikTok перед кликом по редактору описания.
+
+        tiktokautouploader закрывает только обучающий поп-ап с кнопкой Cancel,
+        но TikTok Studio дополнительно открывает промо-модалки (TUXModal-overlay)
+        и показывает уведомления (TUXToast). Они перехватывают клики, и ввод
+        описания падает по 30-секундному таймауту.
+        """
+        # Тосты неинтерактивны: снимаем перехват сразу, ждать не нужно.
+        Pipeline._neutralize_tiktok_overlays(page)
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            try:
+                modals = page.locator(
+                    'div[class*="TUXModal-overlay"][data-transition-status="open"]'
+                )
+                count = modals.count()
+            except Exception:
+                return
+            if not count:
+                return
+            modal = modals.nth(count - 1)
+            closed = False
+            for label in ("Cancel", "Got it", "Not now", "Maybe later"):
+                try:
+                    button = modal.get_by_role("button", name=label, exact=True)
+                    if button.count() and button.first.is_visible():
+                        button.first.click(timeout=2000)
+                        closed = True
+                        time.sleep(1)
+                        break
+                except Exception:
+                    continue
+            if not closed:
+                try:
+                    page.keyboard.press("Escape")
+                    time.sleep(1)
+                except Exception:
+                    pass
+        # Модалка не закрылась штатно: отключаем ей перехват кликов,
+        # чтобы загрузка не падала по таймауту.
+        Pipeline._neutralize_tiktok_overlays(page, include_modals=True)
+
+    @staticmethod
     def _patch_tiktok_cancel_locator():
         """Scope both visibility checks and clicks to the foreground dialog."""
         from functools import wraps
-        selectors = {"button:has-text('Cancel')", 'button:has-text("Cancel")'}
+        button_names = {
+            "button:has-text('Cancel')": "Cancel",
+            'button:has-text("Cancel")': "Cancel",
+            "button:has-text('Got it')": "Got it",
+            'button:has-text("Got it")': "Got it",
+        }
 
         def install(page_class):
             if getattr(page_class.locator, "_autozaliver_dialog_patch", False):
@@ -263,7 +343,7 @@ class Pipeline:
             original_locator = page_class.locator
             original_click = page_class.click
 
-            def target(page):
+            def target(page, name):
                 # Never select the background upload-cancel button. TikTok
                 # uses both ARIA dialogs and floating portal containers.
                 # NOTE: Locator.last (nth=-1) matches nothing under the
@@ -273,31 +353,39 @@ class Pipeline:
                 )
                 count = dialogs.count()
                 if count:
-                    return dialogs.nth(count - 1).get_by_role("button", name="Cancel", exact=True)
+                    return dialogs.nth(count - 1).get_by_role("button", name=name, exact=True)
                 portals = original_locator(
                     page, '[data-floating-ui-portal]:has([class*="Modal-overlay"]:visible)'
                 )
                 count = portals.count()
                 if count:
-                    return portals.nth(count - 1).get_by_role("button", name="Cancel", exact=True)
+                    return portals.nth(count - 1).get_by_role("button", name=name, exact=True)
                 # An empty locator skips dismissal if there is no active dialog.
                 return original_locator(page, '[role="dialog"]:visible').get_by_role(
-                    "button", name="Cancel", exact=True
+                    "button", name=name, exact=True
                 )
 
             @wraps(original_locator)
             def locator(page, selector, *args, **kwargs):
-                if isinstance(selector, str) and selector.strip() in selectors:
-                    return target(page)
+                name = button_names.get(selector.strip()) if isinstance(selector, str) else None
+                if name:
+                    return target(page, name)
                 return original_locator(page, selector, *args, **kwargs)
 
             @wraps(original_click)
             def click(page, selector, *args, **kwargs):
-                if isinstance(selector, str) and selector.strip() in selectors:
-                    button = target(page)
+                name = button_names.get(selector.strip()) if isinstance(selector, str) else None
+                if name:
+                    button = target(page, name)
                     button.click(*args, **kwargs)
-                    button.wait_for(state="hidden", timeout=10000)
+                    try:
+                        button.wait_for(state="hidden", timeout=10000)
+                    except Exception:
+                        # Диалог не исчез: оверлей почистит следующий патч.
+                        pass
                     return
+                # Тосты TikTok перехватывают клики, не будучи интерактивными.
+                Pipeline._neutralize_tiktok_overlays(page)
                 return original_click(page, selector, *args, **kwargs)
 
             locator._autozaliver_dialog_patch = True
@@ -310,6 +398,80 @@ class Pipeline:
             except ImportError:
                 continue
             install(module.Page)
+
+    @staticmethod
+    def _patch_tiktok_locator_click():
+        """Повторяет клик, если его перехватил оверлей TikTok.
+
+        tiktokautouploader кликает по редактору описания, когда поверх висит
+        модалка или тост; Playwright ждет 30 секунд и падает с TimeoutError
+        ("intercepts pointer events"). Ловим этот случай, снимаем перехват
+        и повторяем клик один раз.
+        """
+        from functools import wraps
+
+        def install(locator_class):
+            if getattr(locator_class.click, "_autozaliver_overlay_patch", False):
+                return
+            original_click = locator_class.click
+
+            @wraps(original_click)
+            def click(self, *args, **kwargs):
+                try:
+                    return original_click(self, *args, **kwargs)
+                except Exception as exc:
+                    if "intercepts pointer events" not in str(exc):
+                        raise
+                    try:
+                        # Кнопки внутри открытой модалки (например, Post now)
+                        # нельзя освобождать от перехвата их собственной
+                        # модалкой — для них чистим только тосты.
+                        inside_modal = self.evaluate(
+                            "el => !!el.closest('[data-floating-ui-portal]')"
+                        )
+                    except Exception:
+                        inside_modal = True
+                    Pipeline._neutralize_tiktok_overlays(
+                        self.page, include_modals=not inside_modal
+                    )
+                    return original_click(self, *args, **kwargs)
+
+            click._autozaliver_overlay_patch = True
+            locator_class.click = click
+
+        for module_name in ("phantomwright.sync_api", "playwright.sync_api"):
+            try:
+                module = __import__(module_name, fromlist=["Locator"])
+            except ImportError:
+                continue
+            install(module.Locator)
+
+    @staticmethod
+    def _patch_tiktok_user_simulator():
+        """Чистит оверлеи TikTok перед «человечными» действиями симулятора.
+
+        sim.click/sim.type из phantomwright кликают по редактору описания
+        напрямую (Locator.click), поэтому модалки и тосты надо убрать до
+        самого действия, а не после ошибки.
+        """
+        from functools import wraps
+        try:
+            from phantomwright.user_simulator import SyncUserSimulator
+        except ImportError:
+            return
+
+        for method_name in ("click", "type"):
+            original = getattr(SyncUserSimulator, method_name)
+            if getattr(original, "_autozaliver_overlay_patch", False):
+                continue
+
+            @wraps(original)
+            def method(self, *args, _original=original, **kwargs):
+                Pipeline._dismiss_tiktok_overlays(self.page)
+                return _original(self, *args, **kwargs)
+
+            method._autozaliver_overlay_patch = True
+            setattr(SyncUserSimulator, method_name, method)
 
     def process(self, video):
         active = self.state["active"]
